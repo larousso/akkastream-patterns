@@ -72,9 +72,10 @@ public class CsvUploadController extends Controller {
                     }))
             )
             .mapConcat(l -> l)
-            .map(json ->
-                    json.field("name").asOptString().getOrElse("") + ";" +
+            .map(json -> List.of(
+                    json.field("name").asOptString().getOrElse(""),
                     json.field("place").asOptString().getOrElse("")
+                ).mkString(";")
             )
             .intersperse("name;city\n", "\n", "\n")
             .map(ByteString::fromString);
