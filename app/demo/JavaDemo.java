@@ -18,11 +18,23 @@ public class JavaDemo {
         Materializer materializer = ActorMaterializer.create(system);
 
         Source<String, NotUsed> hey = Source.repeat("Hey");
-        Source<String, Cancellable> yo = Source.tick(FiniteDuration.Zero(), FiniteDuration.create(1, SECONDS), "Yo");
 
-        Source.zipWithN(l -> List.ofAll(l).mkString(" "), List.of(hey, yo).toJavaList())
-                .scan("", (acc, elt) -> acc + " - " + elt)
-                .runForeach(e -> System.out.println(e), materializer);
+        Source<String, Cancellable> yo = Source.tick(
+                FiniteDuration.Zero(),
+                FiniteDuration.create(1, SECONDS),
+                "Yo"
+        );
+
+        Source.zipWithN(
+                l -> List.ofAll(l).mkString(" "),
+                List.of(hey, yo).toJavaList()
+        ).scan(
+                "",
+                (acc, elt) -> acc + " - " + elt
+        ).runForeach(
+                e -> System.out.println(e),
+                materializer
+        );
 
     }
 }

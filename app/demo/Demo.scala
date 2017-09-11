@@ -19,13 +19,15 @@ object Demo extends App {
   implicit val materializer = ActorMaterializer()
   import system.dispatcher
 
-  case class PartialUser(id: Option[String] = None, name: Option[String] = None, age: Option[Int] = None)
+  sealed trait PartialUpdate
+  case class AgeUpdate(id: String, age: Int) extends PartialUpdate
+  case class NameUpdate(id: String, name: String) extends PartialUpdate
+
   case class User(id: String, name: String, age: Int) {
-    def merge(partialUser: PartialUser) : User = partialUser match {
-      case PartialUser(_, Some(n), Some(a)) => this.copy(name = n, age = a)
-      case PartialUser(_, Some(n), None) => this.copy(name = n)
-      case PartialUser(_, None, Some(a)) => this.copy(age = a)
-      case _ => this
+
+    def merge(partialUpdate: PartialUpdate) : User = partialUpdate match {
+      case AgeUpdate(_, a) => this.copy(age = a)
+      case NameUpdate(_, n) => this.copy(name = n)
     }
   }
 
@@ -33,8 +35,8 @@ object Demo extends App {
   val store = Store("store1")
 
   val insert = Source(0 to 10) map (id => (s"$id", User(s"$id", s"name$id", id)))
-  val nameUpdate = Source(0 to 10) map (id => (s"$id",PartialUser(name = Some(s"name${id * id}"))))
-  val ageUpdate = Source(0 to 10) map (id => (s"$id",PartialUser(age = Some(id * id))))
+  val nameUpdate = Source(0 to 10) map (id => (s"$id", NameUpdate(s"$id", s"name${id * id}")))
+  val ageUpdate = Source(0 to 10) map (id => (s"$id", AgeUpdate(s"$id", id * id)))
 
   insert
     .mapAsync(2) {
@@ -53,7 +55,7 @@ object Demo extends App {
 
   val store2 = Store("store2")
 
-  val update = Flow[(String, PartialUser)].flatMapConcat {
+  val update = Flow[(String, PartialUpdate)].flatMapConcat {
     case (id, p) => Source.fromFuture(store2.updateUser(id, p))
   }
 
@@ -83,7 +85,7 @@ object Demo extends App {
     def set(id: String, user: User): Future[User] = (storeActor ? StoreActor.Set(id, user)).mapTo[User]
     def getAll() : Future[Seq[User]] = (storeActor ? StoreActor.GetAll).mapTo[Seq[User]]
 
-    def updateUser(id: String, partialUser: PartialUser) : Future[User] = {
+    def updateUser(id: String, partialUser: PartialUpdate) : Future[User] = {
       getById(id) flatMap {
         case Some(user) => set(id, user.merge(partialUser))
         case None => FastFuture.failed(new RuntimeException("Unknown user"))

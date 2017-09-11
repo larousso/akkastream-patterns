@@ -7,6 +7,7 @@ import akka.actor.ActorSystem
 import akka.stream.FlowShape
 import akka.stream.scaladsl.{Balance, Flow, Framing, GraphDSL, Merge, Source}
 import akka.util.ByteString
+import play.api.Logger
 import play.api.libs.json.{JsObject, Json}
 import play.api.libs.streams.Accumulator
 import play.api.libs.ws.WSClient
@@ -37,6 +38,14 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
     val index1 = Json.obj("index" -> Json.obj("_index" -> "vikings", "_type" -> "vikings1"))
     val index2 = Json.obj("index" -> Json.obj("_index" -> "vikings", "_type" -> "vikings2"))
 
+    def getBulk(server: String) (bulk: Seq[JsObject]): String = {
+      server match {
+        case "server1" => bulk.flatMap(j => List(index1, j)).map(Json.stringify).mkString("", "\n", "\n")
+        case "server2" => bulk.flatMap(j => List(index2, j)).map(Json.stringify).mkString("", "\n", "\n")
+      }
+    }
+
+    //curl -X POST --data-binary @./conf/vikings.csv -H "Content-Type: text/csv" http://localhost:9000/vikings2
     val response = body
       .via(Framing.delimiter(ByteString("\n"), 1000, true))
       .map(_.utf8String)
@@ -47,12 +56,10 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
       }
       .grouped(5)
       .via(loadBalancing(servers){ server =>
-        Flow[Seq[JsObject]].mapAsyncUnordered(1) { bulk =>
-          val strBulk = server match {
-            case "server1" => bulk.flatMap(j => List(index1, j)).map(Json.stringify).mkString("", "\n", "\n")
-            case "server2" => bulk.flatMap(j => List(index2, j)).map(Json.stringify).mkString("", "\n", "\n")
-          }
-          println(strBulk)
+        def bulkToString = getBulk(server) _
+        Flow[Seq[JsObject]].mapAsync(1) { bulk =>
+          val strBulk = bulkToString(bulk)
+          Logger.debug(strBulk)
           wsClient.url("http://localhost:9200/_bulk")
             .withHttpHeaders("Content-Type" -> "application/x-ndjson")
             .post(strBulk)
