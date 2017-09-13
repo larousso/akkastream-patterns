@@ -8,7 +8,7 @@ import akka.stream.FlowShape
 import akka.stream.scaladsl.{Balance, Flow, Framing, GraphDSL, Merge, Source}
 import akka.util.ByteString
 import play.api.Logger
-import play.api.libs.json.{JsObject, Json}
+import play.api.libs.json.{JsArray, JsObject, Json}
 import play.api.libs.streams.Accumulator
 import play.api.libs.ws.WSClient
 import play.api.mvc._
@@ -45,7 +45,7 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
       }
     }
 
-    //curl -X POST --data-binary @./conf/vikings.csv -H "Content-Type: text/csv" http://localhost:9000/vikings2
+    //curl -X POST --data-binary @./conf/vikings.csv -H "Content-Type: text/csv" http://localhost:9000/vikings
     val response = body
       .via(Framing.delimiter(ByteString("\n"), 1000, true))
       .map(_.utf8String)
@@ -67,8 +67,7 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
       })
       .map{ resp => resp.json.as[JsObject] }
       .map { resp =>
-        println(resp)
-        val errors = (resp \\ "items").map(i => (i \ "error").asOpt[JsObject].exists(_ => true))
+        val errors = (resp \ "items").as[JsArray].value.map(i => (i \ "error").asOpt[JsObject].exists(_ => true))
         ImportStatus(nbSuccess = errors.count(e => !e), nbError = errors.count(identity))
       }
       .fold(ImportStatus()) { (s, e) => s.copy(nbSuccess = s.nbSuccess + e.nbSuccess, nbError = s.nbError + e.nbError) }
