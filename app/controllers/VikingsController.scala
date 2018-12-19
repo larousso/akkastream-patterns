@@ -1,7 +1,6 @@
 package controllers
 
 import javax.inject.Inject
-
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.FlowShape
@@ -14,6 +13,7 @@ import play.api.libs.ws.WSClient
 import play.api.mvc._
 
 import scala.concurrent.ExecutionContext
+import scala.util.Failure
 
 class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: WSClient, cc: ControllerComponents) extends AbstractController(cc) {
 
@@ -29,23 +29,20 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
     implicit val format = Json.format[ImportStatus]
   }
 
-  def csvUpload() = Action(sourceBodyParser) { req =>
+  // curl -XDELETE http://localhost:9200/vikings
+  def csvUpload(): Action[Source[ByteString, _]] = Action(sourceBodyParser) { req =>
     import ImportStatus._
 
     val body: Source[ByteString, _] = req.body
 
-    val servers = List("server1", "server2")
-    val index1 = Json.obj("index" -> Json.obj("_index" -> "vikings", "_type" -> "vikings1"))
-    val index2 = Json.obj("index" -> Json.obj("_index" -> "vikings", "_type" -> "vikings2"))
+    val servers = List("localhost:9200", "localhost:9201")
+    val index = Json.obj("index" -> Json.obj("_index" -> "vikings", "_type" -> "vikings"))
 
-    def getBulk(server: String) (bulk: Seq[JsObject]): String = {
-      server match {
-        case "server1" => bulk.flatMap(j => List(index1, j)).map(Json.stringify).mkString("", "\n", "\n")
-        case "server2" => bulk.flatMap(j => List(index2, j)).map(Json.stringify).mkString("", "\n", "\n")
-      }
+    def getBulk(bulk: Seq[JsObject]): String = {
+      bulk.flatMap(j => List(index, j)).map(Json.stringify).mkString("", "\n", "\n")
     }
 
-    //curl -X POST --data-binary @./conf/vikings.csv -H "Content-Type: text/csv" http://localhost:9000/vikings
+    //curl -X POST --data-binary @./conf/vikings.csv -H "Content-Type: text/csv" http://localhost:9000/vikingslb
     val response = body
       .via(Framing.delimiter(ByteString("\n"), 1000, true))
       .map(_.utf8String)
@@ -55,12 +52,12 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
         case name :: place :: Nil => Json.obj("name" -> name, "place" -> place)
       }
       .grouped(5)
-      .via(loadBalancing(servers){ server =>
-        def bulkToString = getBulk(server) _
+      .via(loadBalancing(servers) { server =>
+        Logger.debug(s"$server for flow")
         Flow[Seq[JsObject]].mapAsync(1) { bulk =>
-          val strBulk = bulkToString(bulk)
-          Logger.debug(strBulk)
-          wsClient.url("http://localhost:9200/_bulk")
+          val strBulk = getBulk(bulk)
+          Logger.debug(s"$server -> $strBulk")
+          wsClient.url(s"http://$server/_bulk")
             .withHttpHeaders("Content-Type" -> "application/x-ndjson")
             .post(strBulk)
         }
@@ -73,11 +70,19 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
       .fold(ImportStatus()) { (s, e) => s.copy(nbSuccess = s.nbSuccess + e.nbSuccess, nbError = s.nbError + e.nbError) }
       .map(status => Json.stringify(Json.toJson(status)))
       .map(ByteString.apply)
+      .watchTermination() { (_, d) =>
+        d.onComplete {
+          case Failure(exception) =>
+            Logger.error("Oups", exception)
+          case _ =>
+        }
+        d
+      }
 
     Ok.chunked(response).as("application/json")
   }
 
-  def loadBalancing[In,Out](servers: List[String])(flow: String => Flow[In, Out, NotUsed]) =
+  def loadBalancing[In,Out](servers: List[String])(flow: String => Flow[In, Out, NotUsed]): Flow[In, Out, NotUsed] =
     Flow.fromGraph { GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
 
@@ -86,6 +91,7 @@ class VikingsController @Inject()(executionContext: ExecutionContext, wsClient: 
       val balance = b.add(Balance[In](parallelism))
 
       for ((server, i) <- servers.zipWithIndex) {
+        Logger.info(s"Server $server $i")
         balance.out(i) ~> flow(server).async ~> merge.in(i)
       }
 

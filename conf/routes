@@ -7,8 +7,8 @@
 GET     /                           controllers.HomeController.index
 
 GET  /vikings                       controllers.CsvUploadController.csvDownload
-POST /vikingsjava                       controllers.CsvUploadController.csvUpload
-POST /vikings                      controllers.VikingsController.csvUpload
+POST /vikings                       controllers.CsvUploadController.csvUpload
+POST /vikingslb                     controllers.VikingsController.csvUpload
 POST /extras                        controllers.CsvUploadController.extras
 
 # Map static resources from the /public folder to the /assets URL path

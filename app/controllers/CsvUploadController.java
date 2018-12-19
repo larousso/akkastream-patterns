@@ -45,31 +45,35 @@ public class CsvUploadController extends Controller {
     public Result csvDownload() {
 
         Source<ByteString, NotUsed> csv = Source.fromCompletionStage(wsClient
-                    .url("http://localhost:9200/vikings/vikings/_search?scroll=30s").post(Json.stringify(Json.obj(
+                .url("http://localhost:9200/vikings/vikings/_search?scroll=30s")
+                .addHeader("Content-Type", "application/json")
+                .post(Json.stringify(Json.obj(
                             $("size", 5),
                             $("query", $("match_all", Json.obj()))
                     )))
             )
             .map(response -> Json.parse(response.getBody()))
             .flatMapConcat(jsonResp ->
-                Source
-                    .single(List.ofAll(jsonResp.field("hits").field("hits").asArray()).map(j -> j.field("_source").asObject()))
-                    .concat(Source.unfoldAsync(jsonResp.field("_scroll_id").asString(), nextId -> {
-                        Logger.info("New request "+System.currentTimeMillis());
-                        return wsClient.url("http://localhost:9200/_search/scroll").post(Json.stringify(Json.obj(
-                                $("scroll", "30s"),
-                                $("scroll_id", nextId)
-                        )))
-                        .thenApply(resp -> {
-                            JsValue body = Json.parse(resp.getBody());
-                            List<JsObject> hits = List.ofAll(body.field("hits").field("hits").asArray()).map(j -> j.field("_source").asObject());
-                            if (hits.isEmpty()) {
-                                return Optional.empty();
-                            } else {
-                                return Optional.of(Pair.create(body.field("_scroll_id").asString(), hits));
-                            }
-                        });
-                    }))
+                    Source
+                        .single(jsonResp.field("hits").field("hits").asOptArray().toList().flatMap(List::ofAll).map(j -> j.field("_source").asObject()))
+                        .concat(Source.unfoldAsync(jsonResp.field("_scroll_id").asString(), nextId -> {
+                            Logger.info("New request "+System.currentTimeMillis());
+                            return wsClient.url("http://localhost:9200/_search/scroll")
+                                    .addHeader("Content-Type", "application/json")
+                                    .post(Json.stringify(Json.obj(
+                                            $("scroll", "30s"),
+                                            $("scroll_id", nextId)
+                                    )))
+                                    .thenApply(resp -> {
+                                        JsValue body = Json.parse(resp.getBody());
+                                        List<JsObject> hits = List.ofAll(body.field("hits").field("hits").asArray()).map(j -> j.field("_source").asObject());
+                                        if (hits.isEmpty()) {
+                                            return Optional.empty();
+                                        } else {
+                                            return Optional.of(Pair.create(body.field("_scroll_id").asString(), hits));
+                                        }
+                                    });
+                            }))
             )
             .mapConcat(l -> l)
             .map(json -> List.of(
@@ -78,7 +82,15 @@ public class CsvUploadController extends Controller {
                 ).mkString(";")
             )
             .intersperse("name;city\n", "\n", "\n")
-            .map(ByteString::fromString);
+            .map(ByteString::fromString)
+            .watchTermination((nu, done) -> {
+                done.whenComplete((__, e) -> {
+                    if (e != null) {
+                        Logger.error("Error during download", e);
+                    }
+                });
+                return nu;
+            });
 
         return ok().chunked(csv).as("text/csv");
     }
@@ -114,16 +126,29 @@ public class CsvUploadController extends Controller {
     //curl -XPOST http://localhost:9000/extras
     public Result extras() {
 
+        Logger.info("Generating data in elasticsearch");
+
         JsObject indexMetadata = Json.obj($("index", Json.obj($("_index", "vikings"), $("_type", "vikings"))));
         Source<ByteString, ?> result = Source.range(0, 100000)
                 .map(i -> Json.obj($("name", "viking-num"+i), $("place", "Kattegat")))
                 .grouped(500)
                 .map(l -> List.ofAll(l).flatMap(e -> List.of(indexMetadata, e)).map(Json::stringify).mkString("", "\n", "\n"))
-                .mapAsyncUnordered(4, bulk -> wsClient.url("http://localhost:9200/_bulk").addHeader("Content-Type", "application/x-ndjson").post(bulk))
+                .mapAsyncUnordered(4, bulk ->
+                        wsClient.url("http://localhost:9200/_bulk")
+                                .addHeader("Content-Type", "application/x-ndjson")
+                                .post(bulk)
+                )
                 .map(resp -> Json.parse(resp.getBody()).asObject())
+                .alsoTo(Flow.<JsObject>create().grouped(20).to(Sink.foreach(e -> {
+                    Logger.info("Next {} handled", 500 * 20);
+                })))
                 .map(json -> {
                     List<Boolean> status = List.ofAll(json.field("items").asArray()).map(v -> v.fieldAsOpt("error").map(any -> true).getOrElse(false));
-                    return ImportStatus.create(status.count(e -> !e), status.count(e -> e));
+                    int errors = status.count(e -> e);
+                    if (errors > 0) {
+                        Logger.error("Error during bulk");
+                    }
+                    return ImportStatus.create(status.count(e -> !e), errors);
                 })
                 .fold(ImportStatus.empty(), (acc, elt) -> acc.incSuccess(elt.nbSuccess).incError(elt.nbErrors))
                 .map(status -> Json.stringify(Json.obj($("nbSuccess", status.nbSuccess), $("nbErrors", status.nbErrors))))

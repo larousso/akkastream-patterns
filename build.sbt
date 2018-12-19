@@ -12,9 +12,9 @@ scalaVersion := "2.12.3"
 libraryDependencies ++= Seq(
   guice,
   ws,
-  "io.vavr" % "vavr" % "0.9.0",
-  "org.reactivecouchbase" % "json-lib-javaslang" % "2.0.0",
-  "com.softwaremill.macwire" %% "macros" % "2.3.0" % "provided",
+  "io.vavr" % "vavr" % "0.9.2",
+  "org.reactivecouchbase.json" % "json-lib" % "1.0.0",
+  "com.softwaremill.macwire" %% "macros" % "2.3.1" % "provided",
   "org.scalatestplus.play" %% "scalatestplus-play" % "3.1.0" % Test
 )
 
